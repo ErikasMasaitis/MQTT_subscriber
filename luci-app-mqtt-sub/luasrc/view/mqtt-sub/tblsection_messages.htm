@@ -1,0 +1,178 @@
+<%-
+local curdev = luci.dispatcher.context.requestpath
+local has_titles = false
+local i, k
+local colspan = 1
+
+for i, k in pairs(self.children) do
+	if not has_titles and k.title and #k.title > 0 then
+		has_titles = true
+	end
+end
+
+local function generate_config(config, delimiter)
+	write("{")
+	for name, val in pairs(config) do
+		if type(val) == "table" then
+			write(name .. ":")
+			generate_config(val, true)
+		else
+			if type(val) == "boolean" then
+				val = val and "true" or "false"
+			end
+			write(name .. ":" .. "\"" ..val .."\",")
+		end
+	end
+	if delimiter then write("},") else write("}") end
+end
+
+local function tableSort(a, b)
+	return a.date > b.date
+end
+
+function get_events()
+    local messages = {}
+	local sqlite3 = require "lsqlite3"
+    DB_PATH = "/etc/sub_messages.db"
+	local db = sqlite3.open(DB_PATH)
+    local messages_table = false
+	if db then
+		db:exec([[select * from sqlite_master where name='messages';]], function(...) messages_table = true end)
+			if messages_table then
+				for row in db:rows("select * from messages order by time desc") do
+                    table.insert(messages, {topic = row[1], payload=row[2],time = row[3]})
+				end
+		end
+		db:close()
+	end
+
+	return messages
+end
+
+-%>
+
+<!-- tblsection -->
+<script src="<%=resource%>/vanilla-dataTables.js?v=210323.29147"></script>
+<style>
+    .dataTable-table {
+        table-layout: fixed;
+    }
+</style>
+<% if self.title and #self.title > 0 then -%>
+	<h3 class="content-title <%=(self.description) and ' note-after hoverable' or ' '%>" onclick="toggleContent(this, 'status.eventlog.toggle')">
+		<div class="toggle-arrow expanded"><img src="<%=media%>/img/icons/arrow-toggle.svg"></div>
+		<span><%=self.title%>
+			<% if self.description and #self.description > 0 then %>
+				<div class="label-info"><%=self.description%></div>
+			<% end %>
+			</span>
+	</h3>
+<%- end %>
+<div id="status.eventlog.toggle" class="toggle-content">
+<div id="loading" style="display: flex;flex-direction: column-reverse;align-items: center; margin-top: 100px; margin-bottom: 100px;">
+	<span style="position: relative; bottom: -2px;"> Loading... </span>
+	<img src="/luci-static/resources/icons/loading_small.gif" alt="Loading" style="max-width: 33px;">
+</div>
+<div class="table-wrapper">
+	<table id="table" style="display: none;">
+		<% if has_titles then %>
+			<thead>
+			<tr>
+				<% local i, k
+				   titles = {}
+
+				for i, k in ipairs(self.children) do colspan = colspan + 1
+					if not k.optional then
+						table.insert(titles, k.title) %>
+						<th><%=k.title%></th>
+					<%end
+				end %>
+				<% if self.addremove then -%>
+					<th><input type="checkbox" id="select-all"></th>
+				<%-end-%>
+			</tr>
+			</thead>
+		<% end %>
+		<tbody>
+			<%-
+			local isempty = true, i, k
+			local events = get_events()
+
+			if events and #events > 0 then
+				for i, k in ipairs(events) do
+					isempty = false
+
+					local scope = {
+						valueheader = "cbi/cell_valueheader",
+						valuefooter = "cbi/cell_valuefooter"
+					}
+				-%>
+					<tr class="cbi-section-table-row">
+						<td class="input-cell" id="cbi-table-<%=i%>-date"><div class="div-heading"><%=titles[1]%></div><%=k.topic%></td>
+						<td class="input-cell" id="cbi-table-<%=i%>-sender"><div class="div-heading"><%=titles[2]%></div><%=k.payload%></td>
+						<td class="input-cell left-aligned" id="cbi-table-<%=i%>-event"><div class="div-heading"><%=titles[3]%></div><%=k.time%></td>
+					</tr>
+				<%- end -%>
+			<%- end -%>
+			<%- if isempty then -%>
+			<tr>
+				<td class="left-aligned" <%=ifattr(colspan > 1, "colspan", colspan)%>><em><%:This section contains no values yet%></em></td>
+			</tr>
+			<%- end -%>
+		</tbody>
+	</table>
+</div>
+<div class="btn-group right-align">
+	<%- if self.refresh then -%>
+	<button class="btn medium-btn" onclick="location.reload();">refresh</button>
+	<%- end; if self.addremove then -%>
+	<button class="btn medium-btn" name="cbi.rts.<%=self.config%>.__delete__" alt="<%:Delete%>">delete</button>
+	<%- end -%>
+</div>
+</div>
+<script>
+	function AddWindowOnLoadEvent(Func) {
+		var objOnLoadOld = window.onload;
+
+		if (typeof window.onload != 'function') {
+			window.onload = Func;
+		} else {
+			window.onload = function() {
+				if (objOnLoadOld) {
+					objOnLoadOld();
+				}
+				Func();
+			}
+		}
+	}
+
+	var config = <%generate_config(self.table_config)%>;
+    var table = new DataTable("#table", config);
+
+	AddWindowOnLoadEvent(hide);
+
+	function hide(){
+		var e = document.getElementById("loading");
+		e.setAttribute('style', 'display: none;');
+		var list = document.getElementById("table");
+		list.setAttribute('style', 'display: ');
+	}
+
+    <%- if self.addremove then -%>
+    document.querySelector("#select-all").addEventListener("click", function(ev) {
+        var checked = this.checked;
+        document.getElementsByName('cbid.<%=self.config%>.__selected__').forEach(function(e) {
+            e.checked = checked;
+        });
+    });
+	<%- end -%>
+
+    var headers = document.getElementsByClassName('dataTable-table')[0].getElementsByTagName('th');
+    headers[0].style.width = '';
+    headers[1].style.width = '';
+    headers[2].style.width = '70%';
+	headers[3].style.width = '0%';
+	
+	checkToggled(document.getElementById("status.eventlog.toggle"),"status.eventlog.toggle")
+</script>
+<!-- /tblsection -->
